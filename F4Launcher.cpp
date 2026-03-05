@@ -5,43 +5,9 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "Shell32.lib")
-
-void PrintVaultBoy()
-{
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleTextAttribute(hConsole, FOREGROUND_GREEN | FOREGROUND_INTENSITY);
-
-    printf("________________@@@@@@@@@@@@__________________\n");
-    printf("______________@@____________@@__@@@@__________\n");
-    printf("____________@@________________@@____@@________\n");
-    printf("____________@@____________________@@__________\n");
-    printf("____________@@____........________@@__________\n");
-    printf("____________@@__................@@____________\n");
-    printf("__________@@..........@@....@@..@@____________\n");
-    printf("__________@@..........@@....@@..@@____________\n");
-    printf("____________@@....................@@______@@____\n");
-    printf("__________@@@@....@@............@@@@@@@@..@@__\n");
-    printf("______@@@@####@@....@@@@@@@@..@@########....@@\n");
-    printf("____@@########__@@..........@@__########....@@\n");
-    printf("____@@######@@##__@@@@@@@@@@____########....@@\n");
-    printf("__@@####@@@@@@####______________@@@@@@@@@@@@__\n");
-    printf("__@@......@@@@##########__####@@______________\n");
-    printf("__@@......@@@@##########__####@@______________\n");
-    printf("__@@......@@@@##########__####@@______________\n");
-    printf("____@@@@@@__@@________________@@______________\n");
-    printf("__________@@##################@@______________\n");
-    printf("________@@##########@@##########@@____________\n");
-    printf("______@@@@########@@__@@########@@@@__________\n");
-    printf("__@@@@##########@@______@@##########@@@@______\n");
-    printf("@@##############@@______@@##############@@____\n");
-    printf("@@@@@@@@@@@@@@@@@@______@@@@@@@@@@@@@@@@@@____\n");
-    printf("______________________________________________\n");
-    printf("______________PLEASE STAND BY_________________\n");
-
-    SetConsoleTextAttribute(hConsole, FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
-}
 
 std::wstring GetExecutableDirectory()
 {
@@ -127,7 +93,7 @@ bool SetResolutionInIni(const std::wstring& iniPath,
     }
 
     FlushIni(iniPath);   // Explicit flush
-    Sleep(1000);         // 1 second delay
+    Sleep(2500);         // 2.5 second delay
 
     return true;
 }
@@ -156,15 +122,101 @@ bool LaunchExecutable(const std::wstring& exePath,
         return false;
     }
 
+    log << GetTimestamp() << L" Launched " << exePath << L"\n";
+
+    // Wait for the loader to spawn the actual game
+    Sleep(5000);
+
+    // Find the Fallout4.exe process (the actual game, not the loader)
+    DWORD falloutPid = 0;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+    if (snapshot != INVALID_HANDLE_VALUE)
+    {
+        PROCESSENTRY32W pe = { sizeof(pe) };
+
+        if (Process32FirstW(snapshot, &pe))
+        {
+            do
+            {
+                if (_wcsicmp(pe.szExeFile, L"Fallout4.exe") == 0)
+                {
+                    falloutPid = pe.th32ProcessID;
+                    break;
+                }
+            } while (Process32NextW(snapshot, &pe));
+        }
+        CloseHandle(snapshot);
+    }
+
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
+
+    // Wait for the actual game process
+    if (falloutPid != 0)
+    {
+        HANDLE hGameProcess = OpenProcess(SYNCHRONIZE, FALSE, falloutPid);
+        if (hGameProcess)
+        {
+            // Set focus multiple times to combat Steam overlay stealing focus
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                Sleep(2000);
+
+                HWND hwnd = NULL;
+                do {
+                    hwnd = FindWindowEx(NULL, hwnd, NULL, NULL);
+                    DWORD windowProcessId;
+                    GetWindowThreadProcessId(hwnd, &windowProcessId);
+
+                    if (windowProcessId == falloutPid && IsWindowVisible(hwnd))
+                    {
+                        // Use multiple methods to ensure focus
+                        SetForegroundWindow(hwnd);
+                        SetActiveWindow(hwnd);
+                        BringWindowToTop(hwnd);
+                        SetFocus(hwnd);
+                        break;
+                    }
+                } while (hwnd != NULL);
+            }
+
+            log << GetTimestamp() << L" Focus attempts completed, waiting for game to exit...\n";
+            log.flush();
+
+            WaitForSingleObject(hGameProcess, INFINITE);
+
+            log << GetTimestamp() << L" Game process exited.\n";
+            CloseHandle(hGameProcess);
+
+            // Give focus back to Steam Big Picture
+            Sleep(500);
+            HWND steamWindow = FindWindowW(L"CUIEngineWin32", NULL);  // Steam Big Picture class
+            if (!steamWindow)
+            {
+                steamWindow = FindWindowW(L"SDL_app", NULL);  // Alternative Steam window class
+            }
+            if (!steamWindow)
+            {
+                steamWindow = FindWindowW(NULL, L"Steam Big Picture Mode");  // By title
+            }
+            if (steamWindow)
+            {
+                SetForegroundWindow(steamWindow);
+                SetActiveWindow(steamWindow);
+                BringWindowToTop(steamWindow);
+            }
+        }
+    }
 
     return true;
 }
 
 int wmain()
 {
-	PrintVaultBoy();
+    // Hide the console window
+    HWND consoleWindow = GetConsoleWindow();
+    ShowWindow(consoleWindow, SW_HIDE);
 
     std::wstring exeDir = GetExecutableDirectory();
     std::wstring logPath = exeDir + L"launcher_log.txt";
